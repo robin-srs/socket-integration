@@ -3,6 +3,7 @@ import http from "http";
 import WebSocket from "ws";
 import Redis, { RedisOptions } from "ioredis";
 import "dotenv/config";
+import { randomUUID } from "crypto";
 
 const PORT = process.env.PORT ?? 3000;
 
@@ -14,16 +15,17 @@ const redisConfig: RedisOptions = {
   host: process.env.REDIS_HOST,
   port: Number(process.env.REDIS_PORT),
   password: process.env.REDIS_PASSWORD || undefined,
-  // optional:
-  // tls: {},  // if you use Redis over TLS
 };
 
 if (!process.env.REDIS_HOST) {
   throw new Error("Missing REDIS_HOST in .env");
 }
 
-const redisSubscriber = new Redis(); // must be a separate connection for sub
+const redisSubscriber = new Redis(redisConfig); // must be a separate connection for sub
 
+redisSubscriber.on("error", (err) => {
+  console.error("Redis error:", err);
+});
 // Map each WebSocket connection to the set of channels it's interested in
 const clientSubscriptions = new Map<WebSocket, Set<string>>();
 
@@ -39,6 +41,8 @@ redisSubscriber.on("message", (channel, message) => {
 wss.on("connection", (ws) => {
   console.log("WS client connected");
   clientSubscriptions.set(ws, new Set());
+
+  // auth here
 
   ws.on("message", async (raw) => {
     try {
@@ -86,6 +90,35 @@ wss.on("connection", (ws) => {
       }
     }
   });
+});
+
+app.get("/stats", (req, res) => {
+  const socketToId = new WeakMap<WebSocket, string>();
+  let nextId = 1;
+
+  function getSocketId(socket: WebSocket): string {
+    if (!socketToId.has(socket)) {
+      socketToId.set(socket, `socket-${nextId++}`);
+    }
+    return socketToId.get(socket)!;
+  }
+
+  function serializeClientSubscriptions(): Record<string, string[]> {
+    const result: Record<string, string[]> = {};
+
+    for (const [socket, channels] of clientSubscriptions.entries()) {
+      const id = getSocketId(socket);
+      console.log(id, channels);
+      result[id] = Array.from(channels);
+    }
+
+    return result;
+  }
+  res.json({ sockets: serializeClientSubscriptions() });
+});
+
+app.get("/", (req, res) => {
+  res.send("Welcome to the gateway");
 });
 
 server.listen(PORT, () => {
